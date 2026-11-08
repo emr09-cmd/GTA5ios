@@ -1,0 +1,131 @@
+name: Build Muguet
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      build_ios:
+        description: "Also build iOS IPA (unsigned, no game code)"
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "--remap-path-prefix=$HOME=/home --remap-path-prefix=$PWD=/muguet"
+
+jobs:
+  build-macos:
+    name: Build macOS app
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "macos"
+
+      - name: Install system dependencies
+        run: |
+          brew install cmake || true
+          # binaryen (wasm-opt) is optional for macOS path
+
+      - name: Show toolchain versions
+        run: |
+          rustc --version
+          cargo --version
+          xcodebuild -version
+          uname -m
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: Build macOS app
+        run: |
+          chmod +x make-app.sh
+          ./make-app.sh
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Muguet-macOS
+          path: build/Muguet.app
+          if-no-files-found: error
+          retention-days: 14
+
+  build-ios:
+    name: Build iOS IPA (no game code)
+    runs-on: macos-26
+    if: github.event_name != 'workflow_dispatch' || inputs.build_ios == true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install specific Rust toolchain for iOS
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          targets: aarch64-apple-ios
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ios"
+          key: ios-1.98.1
+
+      - name: Install system dependencies
+        run: |
+          brew install xcodegen cmake binaryen || true
+
+      - name: Show toolchain versions
+        run: |
+          rustc +1.98.1 --version
+          cargo +1.98.1 --version
+          xcodebuild -version
+          xcodegen --version || true
+          uname -m
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: Build iOS (unsigned IPA, no game files)
+        env:
+          BUNDLE_ID: ch.cclerc.muguet.ios.ci
+        run: |
+          chmod +x make-ios.sh
+          # No game.zip → builds without baked-in game code (see make-ios.sh)
+          ./make-ios.sh --ipa
+
+      - name: Upload iOS IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Muguet-iOS
+          path: build/Muguet.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+  # Optional: quick compile check without producing full apps
+  check:
+    name: Cargo check
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --locked --release
